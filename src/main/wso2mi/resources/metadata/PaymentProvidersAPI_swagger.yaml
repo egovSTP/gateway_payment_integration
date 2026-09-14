@@ -1,0 +1,304 @@
+openapi: "3.0.0"
+info:
+  title: Payment Providers API
+  version: "1.0"
+  description: >
+    Unified payment gateway for SAOWALLET and DOBRADIGITAL providers.
+    All endpoints accept POST. The `provider` field in the request body controls routing.
+    Provider-specific fields not applicable to the selected provider can be omitted or left null.
+
+servers:
+  - url: http://localhost:8290/payments
+
+tags:
+  - name: Payments
+    description: Create, check and refund payments across providers
+
+paths:
+
+  /create:
+    post:
+      summary: Create payment
+      tags: [Payments]
+      description: |
+        Initiates a payment. Routes to the correct provider based on `body.provider`.
+
+        ### SAOWALLET required fields
+        `amount`, `currency`, `name`, `payerContact`, `providerId`
+        Required headers: `apiKey`, `clientKey`
+
+        ### DOBRADIGITAL required fields
+        `amount`, `reference`, `services`
+        Required headers: `clientKey`
+
+        Internal flow for DOBRADIGITAL:
+        1. Lookup wallet reference → validates user
+        2. Start transaction → user approves in their wallet app
+        3. Poll `/status` until terminal state
+      parameters:
+        - $ref: '#/components/parameters/clientKeyHeader'
+        - $ref: '#/components/parameters/apiKeyHeader'
+        - $ref: '#/components/parameters/idempotencyKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+            examples:
+              SAOWALLET:
+                summary: SaoWallet — create invoice
+                value:
+                  provider: "SAOWALLET"
+                  amount: 550.00
+                  currency: "STN"
+                  name: "Invoice #1001"
+                  payerContact: "+2399XXXXXXX"
+                  providerId: "INIC"
+                  description: "Order #1001"
+              DOBRADIGITAL:
+                summary: DobraDigital — start transaction
+                value:
+                  provider: "DOBRADIGITAL"
+                  amount: 550
+                  reference: "1133"
+                  services:
+                    - id: "d41b5647-3cf4-4f15-a822-bcb71b61704c"
+                      amount: 250
+                    - id: "f9d32bfa-1fc7-4445-bfbe-c3b8c03e0ebb"
+                      amount: 300
+      responses:
+        "200":
+          description: Payment / transaction started successfully
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "501":
+          $ref: '#/components/responses/NotImplemented'
+
+  /status:
+    post:
+      summary: Check payment status
+      tags: [Payments]
+      description: |
+        Returns the current status of a payment or transaction.
+
+        | Provider | `identifier` value |
+        |---|---|
+        | SAOWALLET | Invoice ID returned by `/create` |
+        | DOBRADIGITAL | `transactionId` returned by `/create` |
+
+        DOBRADIGITAL statuses: `CONFIRMED` · `COMPLETED` · `FAILED` · `CANCELLED` · `EXPIRED`
+      parameters:
+        - $ref: '#/components/parameters/clientKeyHeader'
+        - $ref: '#/components/parameters/apiKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusRequest'
+            examples:
+              SAOWALLET:
+                summary: SaoWallet status
+                value:
+                  provider: "SAOWALLET"
+                  identifier: "inv-abc123"
+              DOBRADIGITAL:
+                summary: DobraDigital status
+                value:
+                  provider: "DOBRADIGITAL"
+                  identifier: "txn-abc123"
+      responses:
+        "200":
+          description: Current status returned
+          content:
+            application/json:
+              examples:
+                DOBRADIGITAL:
+                  value:
+                    version: "1.0"
+                    timestamp: "2026-07-01T15:00:00Z"
+                    transaction:
+                      transactionId: "txn-abc123"
+                      status: "CONFIRMED"
+                      amount: 550
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /refund:
+    post:
+      summary: Refund payment
+      tags: [Payments]
+      description: |
+        Requests a refund. **Currently returns 501 for all providers** — reserved for future implementation.
+      parameters:
+        - $ref: '#/components/parameters/clientKeyHeader'
+        - $ref: '#/components/parameters/apiKeyHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefundRequest'
+            examples:
+              SAOWALLET:
+                summary: SaoWallet refund
+                value:
+                  provider: "SAOWALLET"
+                  identifier: "inv-abc123"
+                  amount: 550.00
+      responses:
+        "501":
+          $ref: '#/components/responses/NotImplemented'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+
+components:
+
+  parameters:
+    clientKeyHeader:
+      name: clientKey
+      in: header
+      required: true
+      description: "SAOWALLET: X-Merchant-Login | DOBRADIGITAL: x-client-key"
+      schema:
+        type: string
+    apiKeyHeader:
+      name: apiKey
+      in: header
+      required: false
+      description: X-Api-Key — required for SAOWALLET
+      schema:
+        type: string
+    idempotencyKeyHeader:
+      name: idempotencyKey
+      in: header
+      required: false
+      description: Idempotency key for SAOWALLET. Auto-generated if omitted.
+      schema:
+        type: string
+
+  schemas:
+    CreatePaymentRequest:
+      type: object
+      required: [provider, amount]
+      properties:
+        provider:
+          type: string
+          enum: [SAOWALLET, DOBRADIGITAL, DOBRA24]
+          description: Payment provider to use
+        amount:
+          type: number
+          description: Total payment amount (max 2 decimal places, dot separator)
+          example: 550.00
+        currency:
+          type: string
+          description: "SAOWALLET required. ISO 4217 code — mapped internally to currencyCode"
+          example: "STN"
+        name:
+          type: string
+          description: "SAOWALLET required. Human-readable invoice name"
+          example: "Invoice #1001"
+        payerContact:
+          type: string
+          description: "SAOWALLET required. Phone number or login of the payer"
+          example: "+2399XXXXXXX"
+        providerId:
+          type: string
+          description: "SAOWALLET required. Internal SDK.Finance payment provider ID"
+          example: "INIC"
+        description:
+          type: string
+          description: Optional invoice description
+          example: "Order #1001"
+        reference:
+          type: string
+          description: "DOBRADIGITAL required: 4-digit Dobra Digital wallet reference. DOBRA24 required: 9-digit SIBS EPMS Referência, generated by the caller."
+          example: "1133"
+        entityCode:
+          type: string
+          description: "DOBRA24 required. SIBS EPMS Entidade for the collecting institution."
+          example: "10001"
+        callerReference:
+          type: string
+          description: "DOBRA24 optional. Caller's own correlation id, echoed back on the payment-confirmation webhook."
+        services:
+          type: array
+          description: "DOBRADIGITAL required. Amount allocation per service. Sum must equal amount. Use [] if no allocation needed."
+          items:
+            type: object
+            required: [id, amount]
+            properties:
+              id:
+                type: string
+                description: Service ID — from Dobra Digital sub-entities endpoint
+                example: "d41b5647-3cf4-4f15-a822-bcb71b61704c"
+              amount:
+                type: number
+                example: 250
+        duceId:
+          type: string
+          description: Optional Dobra Digital identifier
+
+    StatusRequest:
+      type: object
+      required: [provider, identifier]
+      properties:
+        provider:
+          type: string
+          enum: [SAOWALLET, DOBRADIGITAL, DOBRA24]
+        identifier:
+          type: string
+          description: Invoice ID (SAOWALLET) or transactionId (DOBRADIGITAL)
+          example: "txn-abc123"
+
+    RefundRequest:
+      type: object
+      required: [provider, identifier]
+      properties:
+        provider:
+          type: string
+          enum: [SAOWALLET, DOBRADIGITAL, DOBRA24]
+        identifier:
+          type: string
+          description: Invoice or transaction ID to refund
+        amount:
+          type: number
+          description: Amount to refund
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: "MISSING_REQUIRED_FIELD"
+            message:
+              type: string
+              example: "SAOWALLET requires: amount, currency, name, payerContact, providerId"
+
+  responses:
+    BadRequest:
+      description: Missing or invalid fields
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid credentials headers
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotImplemented:
+      description: Feature not yet available for this provider
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

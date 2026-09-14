@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<api xmlns="http://ws.apache.org/ns/synapse"
+     name="PaymentProvidersAPI"
+     context="/payments">
+
+    <!-- POST /payments/create — Create payment (provider in body) -->
+    <resource methods="POST" uri-template="/create">
+        <inSequence>
+            <sequence key="LogRequest"/>
+            <sequence key="CreatePaymentSequence"/>
+        </inSequence>
+        <faultSequence>
+            <sequence key="CommonErrorHandler"/>
+        </faultSequence>
+    </resource>
+
+    <!-- POST /payments/status — Check payment status (provider + identifier in body) -->
+    <resource methods="POST" uri-template="/status">
+        <inSequence>
+            <sequence key="LogRequest"/>
+            <sequence key="CheckStatusSequence"/>
+        </inSequence>
+        <faultSequence>
+            <sequence key="CommonErrorHandler"/>
+        </faultSequence>
+    </resource>
+
+    <!-- POST /payments/refund — Refund payment (provider + identifier in body) -->
+    <resource methods="POST" uri-template="/refund">
+        <inSequence>
+            <sequence key="LogRequest"/>
+            <sequence key="RefundSequence"/>
+        </inSequence>
+        <faultSequence>
+            <sequence key="CommonErrorHandler"/>
+        </faultSequence>
+    </resource>
+
+</api>

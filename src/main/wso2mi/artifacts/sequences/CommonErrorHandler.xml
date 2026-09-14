@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="CommonErrorHandler">
+    <log category="ERROR" logMessageID="true">
+        <message>PAYMENT ERROR | code=${properties.synapse.ERROR_CODE} message=${properties.synapse.ERROR_MESSAGE}</message>
+    </log>
+    <property name="HTTP_SC" value="500" scope="axis2" type="INTEGER"/>
+    <payloadFactory media-type="json">
+        <format>{"error": {"code": "${properties.synapse.ERROR_CODE}", "message": "${properties.synapse.ERROR_MESSAGE}"}}</format>
+    </payloadFactory>
+    <respond/>
+</sequence>

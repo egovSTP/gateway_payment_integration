@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<localEntry xmlns="http://ws.apache.org/ns/synapse" key="SaoWalletEndpoint">
+    <http.init>
+        <connectionType>HTTPS</connectionType>
+        <name>SaoWalletEndpoint</name>
+        <baseUrl>https://saowallet.com</baseUrl>
+    </http.init>
+</localEntry>

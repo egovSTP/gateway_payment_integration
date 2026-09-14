@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Dobra24Endpoint — gateway_spout_rta (the RTA bridging us to dobra24/SIBS EPMS).
+    Local dev base URL; update to the deployed RTA URL for other environments.
+-->
+<localEntry xmlns="http://ws.apache.org/ns/synapse" key="Dobra24Endpoint">
+    <http.init>
+        <connectionType>HTTP</connectionType>
+        <name>Dobra24Endpoint</name>
+        <!-- host.docker.internal, not localhost: MI runs inside a container, so
+             "localhost" would resolve to the container itself, not the host machine
+             where gateway_spout_rta actually runs. -->
+        <baseUrl>http://localhost:8090</baseUrl>
+    </http.init>
+</localEntry>

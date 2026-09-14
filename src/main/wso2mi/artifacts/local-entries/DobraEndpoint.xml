@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<localEntry xmlns="http://ws.apache.org/ns/synapse" key="DobraEndpoint">
+    <http.init>
+        <connectionType>HTTPS</connectionType>
+        <name>DobraEndpoint</name>
+        <baseUrl>https://europe-west1-dobra-digital.cloudfunctions.net/apiv1</baseUrl>
+    </http.init>
+</localEntry>

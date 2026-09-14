@@ -1,0 +1,96 @@
+{
+  "/create": [
+    {
+      "name": "Create Payment - SAOWALLET",
+      "defaultRequest": true,
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "apiKey": "your-api-key",
+        "clientKey": "your-merchant-login",
+        "idempotencyKey": "unique-idempotency-key"
+      },
+      "body": {
+        "provider": "SAOWALLET",
+        "amount": 100.00,
+        "currency": "USD",
+        "name": "Invoice Name",
+        "payerContact": "+1234567890",
+        "providerId": "your-sdk-finance-provider-id"
+      }
+    },
+    {
+      "name": "Create Payment - DOBRADIGITAL",
+      "defaultRequest": false,
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "clientKey": "your-client-key"
+      },
+      "body": {
+        "provider": "DOBRADIGITAL",
+        "amount": 50.00,
+        "reference": "1234",
+        "services": []
+      }
+    }
+  ],
+  "/status": [
+    {
+      "name": "Check Status - SAOWALLET",
+      "defaultRequest": true,
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "apiKey": "your-api-key",
+        "clientKey": "your-merchant-login"
+      },
+      "body": {
+        "provider": "SAOWALLET",
+        "invoiceId": "your-invoice-id"
+      }
+    },
+    {
+      "name": "Check Status - DOBRADIGITAL",
+      "defaultRequest": false,
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "clientKey": "your-client-key"
+      },
+      "body": {
+        "provider": "DOBRADIGITAL",
+        "transactionId": "your-transaction-id"
+      }
+    }
+  ],
+  "/refund": [
+    {
+      "name": "Refund - SAOWALLET",
+      "defaultRequest": true,
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "apiKey": "your-api-key",
+        "clientKey": "your-merchant-login"
+      },
+      "body": {
+        "provider": "SAOWALLET",
+        "invoiceId": "your-invoice-id"
+      }
+    },
+    {
+      "name": "Refund - DOBRADIGITAL",
+      "defaultRequest": false,
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "clientKey": "your-client-key"
+      },
+      "body": {
+        "provider": "DOBRADIGITAL",
+        "transactionId": "your-transaction-id"
+      }
+    }
+  ]
+}

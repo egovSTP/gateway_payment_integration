@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="LogRequest">
+    <log category="INFO" logMessageID="true" logFullPayload="true">
+        <message>INBOUND REQUEST | method=${properties.synapse.REST_METHOD} path=${properties.synapse.REST_FULL_REQUEST_PATH}</message>
+    </log>
+</sequence>

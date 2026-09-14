@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="LogResponse">
+    <log category="INFO" logMessageID="true" logFullPayload="true">
+        <message>OUTBOUND RESPONSE | status=${properties.axis2.HTTP_SC}</message>
+    </log>
+</sequence>

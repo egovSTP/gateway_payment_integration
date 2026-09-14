@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="CheckStatusSequence">
+
+    <!--
+        Request body:
+          provider    (required) — SAOWALLET | DOBRADIGITAL
+          identifier  (required) — invoice ID (SAOWALLET) | transactionId (DOBRADIGITAL)
+
+        Headers:
+          clientKey   (required) — X-Merchant-Login (SAOWALLET) | x-client-key (DOBRADIGITAL)
+          apiKey      (required for SAOWALLET) — X-Api-Key
+    -->
+
+    <!-- Validate required body fields -->
+    <filter xpath="${not(exists(payload.provider)) or not(exists(payload.identifier))}">
+        <then>
+            <property name="HTTP_SC" value="400" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{"error": {"code": "MISSING_REQUIRED_FIELD", "message": "Fields 'provider' and 'identifier' are required"}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </then>
+        <else/>
+    </filter>
+
+    <variable name="provider" type="STRING" expression="${payload.provider}"/>
+    <variable name="identifier" type="STRING" expression="${payload.identifier}"/>
+    <variable name="apiKey" type="STRING" expression="${headers[&quot;apiKey&quot;]}"/>
+    <variable name="clientKey" type="STRING" expression="${headers[&quot;clientKey&quot;]}"/>
+
+    <switch source="${vars.provider}">
+
+        <!-- ── SAOWALLET ── -->
+        <case regex="SAOWALLET">
+            <log category="INFO">
+                <message>CheckStatus | provider=SAOWALLET | identifier=${vars.identifier}</message>
+            </log>
+
+            <!-- Validate credentials -->
+            <filter xpath="${not(exists(headers[&quot;apiKey&quot;])) or not(exists(headers[&quot;clientKey&quot;]))}">
+                <then>
+                    <property name="HTTP_SC" value="401" scope="axis2" type="INTEGER"/>
+                    <payloadFactory media-type="json">
+                        <format>{"error": {"code": "MISSING_CREDENTIALS", "message": "SAOWALLET requires headers: apiKey, clientKey"}}</format>
+                    </payloadFactory>
+                    <sequence key="LogResponse"/>
+                    <respond/>
+                </then>
+                <else/>
+            </filter>
+
+            <http.get configKey="SaoWalletEndpoint">
+                <relativePath>{${"/merchant/invoices/" + vars.identifier}}</relativePath>
+                <headers>[[&quot;X-Api-Key&quot;,&quot;${vars.apiKey}&quot;],[&quot;X-Merchant-Login&quot;,&quot;${vars.clientKey}&quot;]]</headers>
+                <nonErrorHttpStatusCodes>401,404,500</nonErrorHttpStatusCodes>
+                <responseVariable>providerResponse</responseVariable>
+                <overwriteBody>false</overwriteBody>
+            </http.get>
+            <property name="HTTP_SC" expression="${vars.providerResponse.attributes.statusCode}" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{${vars.providerResponse.payload}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </case>
+
+        <!-- ── DOBRADIGITAL ── -->
+        <case regex="DOBRADIGITAL">
+            <log category="INFO">
+                <message>CheckStatus | provider=DOBRADIGITAL | identifier=${vars.identifier}</message>
+            </log>
+
+            <!-- Validate credentials -->
+            <filter xpath="${not(exists(headers[&quot;clientKey&quot;]))}">
+                <then>
+                    <property name="HTTP_SC" value="401" scope="axis2" type="INTEGER"/>
+                    <payloadFactory media-type="json">
+                        <format>{"error": {"code": "MISSING_CREDENTIALS", "message": "DOBRADIGITAL requires header: clientKey"}}</format>
+                    </payloadFactory>
+                    <sequence key="LogResponse"/>
+                    <respond/>
+                </then>
+                <else/>
+            </filter>
+
+            <http.get configKey="DobraEndpoint">
+                <relativePath>{${"/transactions/" + vars.identifier + "/status"}}</relativePath>
+                <headers>[[&quot;x-client-key&quot;,&quot;${vars.clientKey}&quot;]]</headers>
+                <nonErrorHttpStatusCodes>401,404,429,500</nonErrorHttpStatusCodes>
+                <responseVariable>providerResponse</responseVariable>
+                <overwriteBody>false</overwriteBody>
+            </http.get>
+            <property name="HTTP_SC" expression="${vars.providerResponse.attributes.statusCode}" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{${vars.providerResponse.payload}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </case>
+
+        <!-- ── DOBRA24 — identifier is the 9-digit SIBS Referência ── -->
+        <case regex="DOBRA24">
+            <log category="INFO">
+                <message>CheckStatus | provider=DOBRA24 | identifier=${vars.identifier}</message>
+            </log>
+
+            <!-- TODO: move to a proper secret store — see Dobra24Endpoint local entry comment. -->
+            <http.get configKey="Dobra24Endpoint">
+                <relativePath>{${"/references/" + vars.identifier}}</relativePath>
+                <headers>[[&quot;X-Api-Key&quot;,&quot;dev-local-api-key&quot;]]</headers>
+                <nonErrorHttpStatusCodes>401,404,500</nonErrorHttpStatusCodes>
+                <responseVariable>providerResponse</responseVariable>
+                <overwriteBody>false</overwriteBody>
+            </http.get>
+            <property name="HTTP_SC" expression="${vars.providerResponse.attributes.statusCode}" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{${vars.providerResponse.payload}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </case>
+
+        <!-- ── Unknown provider ── -->
+        <default>
+            <log category="ERROR">
+                <message>CheckStatus | unknown provider=${vars.provider}</message>
+            </log>
+            <property name="HTTP_SC" value="400" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{"error": {"code": "UNKNOWN_PROVIDER", "message": "Provider '${vars.provider}' is not supported. Supported: SAOWALLET, DOBRADIGITAL, DOBRA24"}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </default>
+
+    </switch>
+
+</sequence>

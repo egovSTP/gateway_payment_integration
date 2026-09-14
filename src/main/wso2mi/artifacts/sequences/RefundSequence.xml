@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="RefundSequence">
+
+    <!--
+        Request body:
+          provider    (required) — SAOWALLET | DOBRADIGITAL
+          identifier  (required) — invoice/transaction ID to refund
+          amount      (optional) — refund amount
+
+        Headers:
+          clientKey   (required)
+          apiKey      (required for SAOWALLET)
+    -->
+
+    <!-- Validate required body fields -->
+    <filter xpath="${not(exists(payload.provider)) or not(exists(payload.identifier))}">
+        <then>
+            <property name="HTTP_SC" value="400" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{"error": {"code": "MISSING_REQUIRED_FIELD", "message": "Fields 'provider' and 'identifier' are required"}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </then>
+        <else/>
+    </filter>
+
+    <variable name="provider" type="STRING" expression="${payload.provider}"/>
+    <variable name="identifier" type="STRING" expression="${payload.identifier}"/>
+
+    <switch source="${vars.provider}">
+
+        <!-- ── SAOWALLET ── refund not yet available -->
+        <case regex="SAOWALLET">
+            <log category="WARN">
+                <message>Refund | provider=SAOWALLET | identifier=${vars.identifier} | refund endpoint not yet defined in SDK.Finance spec</message>
+            </log>
+            <property name="HTTP_SC" value="501" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{"error": {"code": "NOT_IMPLEMENTED", "message": "Refund is not yet available for SAOWALLET provider"}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </case>
+
+        <!-- ── DOBRADIGITAL ── no refund endpoint in Dobra Digital API -->
+        <case regex="DOBRADIGITAL">
+            <log category="WARN">
+                <message>Refund | provider=DOBRADIGITAL | identifier=${vars.identifier} | refund not supported by Dobra Digital API</message>
+            </log>
+            <property name="HTTP_SC" value="501" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{"error": {"code": "NOT_IMPLEMENTED", "message": "Refund is not supported by the DOBRADIGITAL provider"}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </case>
+
+        <!-- ── Unknown provider ── -->
+        <default>
+            <log category="ERROR">
+                <message>Refund | unknown provider=${vars.provider}</message>
+            </log>
+            <property name="HTTP_SC" value="400" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{"error": {"code": "UNKNOWN_PROVIDER", "message": "Provider '${vars.provider}' is not supported. Supported: SAOWALLET, DOBRADIGITAL"}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </default>
+
+    </switch>
+
+</sequence>

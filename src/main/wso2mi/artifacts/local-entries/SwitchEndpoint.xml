@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    SwitchEndpoint — provider routing configuration.
+    Maps provider codes (used in the API path) to their connection keys.
+    Supported providers: SAOWALLET, DOBRADIGITAL
+-->
+<localEntry xmlns="http://ws.apache.org/ns/synapse" key="SwitchEndpoint">
+    <![CDATA[{
+        "SAOWALLET": "SaoWalletEndpoint",
+        "DOBRADIGITAL":     "DobraEndpoint"
+    }]]>
+</localEntry>

@@ -1,0 +1,287 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="CreatePaymentSequence">
+
+    <!--
+        Unified request body:
+          provider      (required) — SAOWALLET | DOBRADIGITAL
+          amount        (required) — total payment amount
+          currency      (required for SAOWALLET) → maps to currencyCode
+          name          (required for SAOWALLET) — invoice name
+          payerContact  (required for SAOWALLET) — phone or login
+          providerId    (required for SAOWALLET) — SDK.Finance provider ID
+          reference     (required for DOBRADIGITAL) — 4-digit wallet reference
+          services      (required for DOBRADIGITAL) — allocation array or ""
+          description   (optional)
+          duceId        (optional)
+
+        Normalized headers:
+          clientKey       → X-Merchant-Login (SAOWALLET) | x-client-key (DOBRADIGITAL)
+          apiKey          → X-Api-Key (SAOWALLET only)
+          idempotencyKey  → Idempotency-Key (SAOWALLET, auto-generated if omitted)
+    -->
+
+    <!-- Validate provider field exists -->
+    <filter xpath="${not(exists(payload.provider))}">
+        <then>
+            <property name="HTTP_SC" value="400" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{"error": {"code": "MISSING_REQUIRED_FIELD", "message": "Field 'provider' is required. Supported values: SAOWALLET, DOBRADIGITAL"}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </then>
+        <else/>
+    </filter>
+
+    <variable name="provider" type="STRING" expression="${payload.provider}"/>
+    <variable name="apiKey" type="STRING" expression="${headers[&quot;apiKey&quot;]}"/>
+    <variable name="clientKey" type="STRING" expression="${headers[&quot;clientKey&quot;]}"/>
+    <variable name="idempotencyKey" type="STRING"
+              expression="${exists(headers[&quot;idempotencyKey&quot;]) ? headers[&quot;idempotencyKey&quot;] : string(now())}"/>
+
+    <switch source="${vars.provider}">
+
+        <!-- ══════════════════════════════════════════════
+             SAOWALLET — SDK.Finance Merchant Invoice API
+             ══════════════════════════════════════════════ -->
+        <case regex="SAOWALLET">
+            <log category="INFO">
+                <message>CreatePayment | provider=SAOWALLET</message>
+            </log>
+
+            <!-- Validate credentials -->
+            <filter xpath="${not(exists(headers[&quot;apiKey&quot;])) or not(exists(headers[&quot;clientKey&quot;]))}">
+                <then>
+                    <property name="HTTP_SC" value="401" scope="axis2" type="INTEGER"/>
+                    <payloadFactory media-type="json">
+                        <format>{"error": {"code": "MISSING_CREDENTIALS", "message": "SAOWALLET requires headers: apiKey, clientKey"}}</format>
+                    </payloadFactory>
+                    <sequence key="LogResponse"/>
+                    <respond/>
+                </then>
+                <else/>
+            </filter>
+
+            <!-- Validate required body fields -->
+            <filter xpath="${not(exists(payload.amount)) or not(exists(payload.currency)) or not(exists(payload.name)) or not(exists(payload.payerContact)) or not(exists(payload.providerId))}">
+                <then>
+                    <property name="HTTP_SC" value="400" scope="axis2" type="INTEGER"/>
+                    <payloadFactory media-type="json">
+                        <format>{"error": {"code": "MISSING_REQUIRED_FIELD", "message": "SAOWALLET requires: amount, currency, name, payerContact, providerId"}}</format>
+                    </payloadFactory>
+                    <sequence key="LogResponse"/>
+                    <respond/>
+                </then>
+                <else/>
+            </filter>
+
+            <!-- Extract and map unified fields to SaoWallet field names -->
+            <variable name="sw_name" type="STRING" expression="${payload.name}"/>
+            <variable name="sw_payerContact" type="STRING" expression="${payload.payerContact}"/>
+            <variable name="sw_currency" type="STRING" expression="${payload.currency}"/>
+            <variable name="sw_amount" type="DOUBLE" expression="${payload.amount}"/>
+            <variable name="sw_providerId" type="STRING" expression="${payload.providerId}"/>
+
+            <!-- Build SaoWallet-specific request body -->
+            <payloadFactory media-type="json">
+                <format>{
+                    "name": "${vars.sw_name}",
+                    "payerContact": "${vars.sw_payerContact}",
+                    "currencyCode": "${vars.sw_currency}",
+                    "amount": ${vars.sw_amount},
+                    "providerId": "${vars.sw_providerId}"
+                }</format>
+            </payloadFactory>
+
+            <http.post configKey="SaoWalletEndpoint">
+                <relativePath>/merchant/invoices</relativePath>
+                <headers>[[&quot;X-Api-Key&quot;,&quot;${vars.apiKey}&quot;],[&quot;X-Merchant-Login&quot;,&quot;${vars.clientKey}&quot;],[&quot;Idempotency-Key&quot;,&quot;${vars.idempotencyKey}&quot;],[&quot;Content-Type&quot;,&quot;application/json&quot;]]</headers>
+                <requestBodyType>JSON</requestBodyType>
+                <requestBodyJson>{${payload}}</requestBodyJson>
+                <nonErrorHttpStatusCodes>400,401,409,422,500</nonErrorHttpStatusCodes>
+                <responseVariable>providerResponse</responseVariable>
+                <overwriteBody>false</overwriteBody>
+            </http.post>
+            <property name="HTTP_SC" expression="${vars.providerResponse.attributes.statusCode}" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{${vars.providerResponse.payload}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </case>
+
+        <!-- ══════════════════════════════════════════════
+             DOBRADIGITAL — lookup → start transaction
+             ══════════════════════════════════════════════ -->
+        <case regex="DOBRADIGITAL">
+            <log category="INFO">
+                <message>CreatePayment | provider=DOBRADIGITAL | reference=${payload.reference}</message>
+            </log>
+
+            <!-- Validate credentials -->
+            <filter xpath="${not(exists(headers[&quot;clientKey&quot;]))}">
+                <then>
+                    <property name="HTTP_SC" value="401" scope="axis2" type="INTEGER"/>
+                    <payloadFactory media-type="json">
+                        <format>{"error": {"code": "MISSING_CREDENTIALS", "message": "DOBRADIGITAL requires header: clientKey"}}</format>
+                    </payloadFactory>
+                    <sequence key="LogResponse"/>
+                    <respond/>
+                </then>
+                <else/>
+            </filter>
+
+            <!-- Validate required body fields -->
+            <filter xpath="${not(exists(payload.amount)) or not(exists(payload.reference))}">
+                <then>
+                    <property name="HTTP_SC" value="400" scope="axis2" type="INTEGER"/>
+                    <payloadFactory media-type="json">
+                        <format>{"error": {"code": "MISSING_REQUIRED_FIELD", "message": "DOBRADIGITAL requires: amount, reference"}}</format>
+                    </payloadFactory>
+                    <sequence key="LogResponse"/>
+                    <respond/>
+                </then>
+                <else/>
+            </filter>
+
+            <!-- Save original request fields before payloadFactory overwrites payload -->
+            <variable name="dobraReference" type="STRING" expression="${payload.reference}"/>
+            <variable name="dobraAmount" type="DOUBLE" expression="${payload.amount}"/>
+            <variable name="dobraServices" type="JSON"
+                      expression="${exists(payload.services) and isArray(payload.services) ? payload.services : []}"/>
+
+            <!-- Build lookup request body -->
+            <payloadFactory media-type="json">
+                <format>{"reference": "${vars.dobraReference}"}</format>
+            </payloadFactory>
+
+            <!-- Step 1: Validate reference -->
+            <http.post configKey="DobraEndpoint">
+                <relativePath>/lookup</relativePath>
+                <headers>[[&quot;x-client-key&quot;,&quot;${vars.clientKey}&quot;],[&quot;Content-Type&quot;,&quot;application/json&quot;]]</headers>
+                <requestBodyType>JSON</requestBodyType>
+                <requestBodyJson>{${payload}}</requestBodyJson>
+                <nonErrorHttpStatusCodes>400,401,404,500</nonErrorHttpStatusCodes>
+                <responseVariable>lookupResponse</responseVariable>
+                <overwriteBody>false</overwriteBody>
+            </http.post>
+            <filter xpath="${vars.lookupResponse.attributes.statusCode >= 400}">
+                <then>
+                    <log category="ERROR">
+                        <message>CreatePayment | DOBRADIGITAL lookup failed | status=${vars.lookupResponse.attributes.statusCode}</message>
+                    </log>
+                    <property name="HTTP_SC" expression="${vars.lookupResponse.attributes.statusCode}" scope="axis2" type="INTEGER"/>
+                    <payloadFactory media-type="json">
+                        <format>{${vars.lookupResponse.payload}}</format>
+                    </payloadFactory>
+                    <sequence key="LogResponse"/>
+                    <respond/>
+                </then>
+                <else/>
+            </filter>
+
+            <!-- Step 2: Build and send transaction start request -->
+            <payloadFactory media-type="json">
+                <format>{
+                    "source": {
+                        "version": "${vars.lookupResponse.payload.version}",
+                        "timestamp": "${vars.lookupResponse.payload.timestamp}",
+                        "user": ${vars.lookupResponse.payload.user}
+                    },
+                    "amount": ${vars.dobraAmount},
+                    "signature": "${vars.lookupResponse.payload.signature}",
+                    "services": ${vars.dobraServices}
+                }</format>
+            </payloadFactory>
+            <http.post configKey="DobraEndpoint">
+                <relativePath>/transactions/start</relativePath>
+                <headers>[[&quot;x-client-key&quot;,&quot;${vars.clientKey}&quot;],[&quot;Content-Type&quot;,&quot;application/json&quot;]]</headers>
+                <requestBodyType>JSON</requestBodyType>
+                <requestBodyJson>{${payload}}</requestBodyJson>
+                <nonErrorHttpStatusCodes>400,401,422,500</nonErrorHttpStatusCodes>
+                <responseVariable>providerResponse</responseVariable>
+                <overwriteBody>false</overwriteBody>
+            </http.post>
+            <property name="HTTP_SC" expression="${vars.providerResponse.attributes.statusCode}" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{${vars.providerResponse.payload}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </case>
+
+        <!-- ══════════════════════════════════════════════
+             DOBRA24 — SIBS EPMS Pagamento de Serviços, via gateway_spout_rta.
+             entityCode/reference are generated by gateway_core (SIBS Entidade + the
+             9-digit Referência) — MI just forwards the registration to RTA, which
+             batches it into an AEPS file. RTA notifies gateway_core directly via
+             webhook when paid; MI is not on that path.
+             ══════════════════════════════════════════════ -->
+        <case regex="DOBRA24">
+            <log category="INFO">
+                <message>CreatePayment | provider=DOBRA24 | reference=${payload.reference}</message>
+            </log>
+
+            <!-- Validate required body fields -->
+            <filter xpath="${not(exists(payload.amount)) or not(exists(payload.entityCode)) or not(exists(payload.reference))}">
+                <then>
+                    <property name="HTTP_SC" value="400" scope="axis2" type="INTEGER"/>
+                    <payloadFactory media-type="json">
+                        <format>{"error": {"code": "MISSING_REQUIRED_FIELD", "message": "DOBRA24 requires: amount, entityCode, reference"}}</format>
+                    </payloadFactory>
+                    <sequence key="LogResponse"/>
+                    <respond/>
+                </then>
+                <else/>
+            </filter>
+
+            <variable name="d24EntityCode" type="STRING" expression="${payload.entityCode}"/>
+            <variable name="d24Reference" type="STRING" expression="${payload.reference}"/>
+            <variable name="d24Amount" type="DOUBLE" expression="${payload.amount}"/>
+            <variable name="d24CallerReference" type="STRING"
+                      expression="${exists(payload.callerReference) ? payload.callerReference : ''}"/>
+
+            <!-- Build gateway_spout_rta request body -->
+            <payloadFactory media-type="json">
+                <format>{
+                    "entityCode": "${vars.d24EntityCode}",
+                    "reference": "${vars.d24Reference}",
+                    "amount": ${vars.d24Amount},
+                    "callerReference": "${vars.d24CallerReference}"
+                }</format>
+            </payloadFactory>
+
+            <!-- TODO: move to a proper secret store — see Dobra24Endpoint local entry comment. -->
+            <http.post configKey="Dobra24Endpoint">
+                <relativePath>/references</relativePath>
+                <headers>[[&quot;X-Api-Key&quot;,&quot;dev-local-api-key&quot;],[&quot;Content-Type&quot;,&quot;application/json&quot;]]</headers>
+                <requestBodyType>JSON</requestBodyType>
+                <requestBodyJson>{${payload}}</requestBodyJson>
+                <nonErrorHttpStatusCodes>400,401,404,409,500</nonErrorHttpStatusCodes>
+                <responseVariable>providerResponse</responseVariable>
+                <overwriteBody>false</overwriteBody>
+            </http.post>
+            <property name="HTTP_SC" expression="${vars.providerResponse.attributes.statusCode}" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{${vars.providerResponse.payload}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </case>
+
+        <!-- ── Unknown provider ── -->
+        <default>
+            <log category="ERROR">
+                <message>CreatePayment | unknown provider=${vars.provider}</message>
+            </log>
+            <property name="HTTP_SC" value="400" scope="axis2" type="INTEGER"/>
+            <payloadFactory media-type="json">
+                <format>{"error": {"code": "UNKNOWN_PROVIDER", "message": "Provider '${vars.provider}' is not supported. Supported: SAOWALLET, DOBRADIGITAL, DOBRA24"}}</format>
+            </payloadFactory>
+            <sequence key="LogResponse"/>
+            <respond/>
+        </default>
+
+    </switch>
+
+</sequence>
