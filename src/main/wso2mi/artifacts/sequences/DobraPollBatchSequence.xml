@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sequence xmlns="http://ws.apache.org/ns/synapse" name="DobraPollBatchSequence">
+
+    <!--
+        Polls GET /portal/transactions/batch/{batchId}/stream once, and recurses
+        (re-connects) until a terminal status is observed or dobraPollMaxAttempts
+        is exhausted.
+
+        WHY A LOOP: Dobra Digital's SSE endpoint does not hold the connection open
+        for the whole 4-minute approval window described in the manual — something
+        on their side (an infra-level idle/response timeout, not documented) closes
+        the connection after roughly 60s even when the batch is still
+        awaiting_approval, delivering whatever the current (non-terminal) state was
+        at that point. Empirically verified against the real endpoint (2026-09-22):
+          - already-resolved batch  -> responds in ~1s with the terminal event
+          - still-pending batch     -> connection held ~60s, then closes with the
+                                        last known (non-terminal) event, HTTP 200
+        A single http.get therefore cannot be trusted to observe the terminal
+        state — this sequence re-connects until it does, or gives up.
+
+        Expects (vars, set by the caller — CheckStatusSequence — before the first call):
+          clientKey            — x-client-key value (already set earlier in CheckStatusSequence)
+          dobraBatchId          — batch id to poll
+          dobraPollAttempt      — current attempt number, INTEGER, starts at 1
+          dobraPollMaxAttempts  — INTEGER cap (recommended: 6 — ~6 min worst case,
+                                   comfortably covering Dobra's 4-minute approval window)
+
+        Sets on return (consumed by CheckStatusSequence right after calling this):
+          dobraHttpStatus  — INTEGER, the LAST http.get call's HTTP status code
+                             (>= 400 means an HTTP-level failure, not a Dobra Digital
+                             batch state)
+          dobraPollRaw     — STRING, the JSON text of the LAST "data:" SSE event in
+                             the response body when the call succeeded (e.g.
+                             {"timestamp":...,"batch":{"id":...,"status":"completed",
+                             "transactionIds":[...],"error":null}}), or the raw error
+                             body when dobraHttpStatus >= 400. Forwarded as-is to the
+                             caller (gateway_core) — its own normalizeProviderResponse()
+                             already tolerates the MI double-brace wrapping quirk when
+                             this is spliced into a payloadFactory JSON template as
+                             {${vars.dobraPollRaw}}.
+
+          IMPORTANT: CheckStatusSequence (and this sequence itself) must only ever
+          read dobraHttpStatus/dobraPollRaw — never vars.dobraStreamResponse directly,
+          and never from more than the one place below. Re-reading a connector
+          responseVariable's properties (.attributes.statusCode / .payload) from a
+          second mediator/sequence was observed (2026-09-22) to throw "class
+          java.util.HashMap cannot be cast to class
+          org.apache.synapse.data.connector.ConnectorResponse" on the second read —
+          the engine appears to replace the object's internal representation after
+          the first access. Capturing both values into plain typed variables
+          immediately after the call, and only ever referencing those afterwards,
+          avoids it.
+
+        Validated end-to-end against a live MI runtime (2026-09-22):
+          - the self-recursive <sequence key="DobraPollBatchSequence"/> call deploys
+            and runs fine — not flagged as circular by the MI tooling.
+          - the response body can contain MORE THAN ONE SSE event when Dobra Digital
+            pushes a state change while the connection is still open (not just one
+            event per connection, as the two initial manual curl tests suggested).
+            dobraPollRaw extraction therefore splits the raw body on the literal
+            'data: ' delimiter and takes the LAST segment — split/length/contains are
+            confirmed-available functions; indexOf/subString + "take everything to
+            end of string" (an earlier version of this extraction) wrongly included
+            any later events appended after the first one.
+    -->
+
+    <!-- No responseVariable — avoids the ConnectorResponse->HashMap ClassCastException
+         that occurs when any property is read off a responseVariable across recursive
+         calls (the engine converts the var to a plain HashMap after the first access).
+         overwriteBody=true writes the response body to the message payload directly;
+         the transport sets HTTP_SC in the axis2 scope automatically, giving the status
+         code without any ConnectorResponse object involved. -->
+    <http.get configKey="DobraEndpoint">
+        <relativePath>{${"/portal/transactions/batch/" + vars.dobraBatchId + "/stream"}}</relativePath>
+        <headers>[["x-client-key","${vars.clientKey}"],["Accept","text/event-stream"]]</headers>
+        <nonErrorHttpStatusCodes>400,401,404,429,500</nonErrorHttpStatusCodes>
+        <overwriteBody>true</overwriteBody>
+    </http.get>
+
+    <!-- HTTP_SC is set in axis2 scope by the transport.
+         PlainTextBuilder (registered for text/event-stream) stores the raw body text
+         inside a <TEXT> XML element — extract it with xpath rather than string(payload),
+         which goes through the JSON engine and produces a mangled object instead of
+         the raw SSE string. -->
+    <variable name="dobraHttpStatus" type="INTEGER" expression="${properties.axis2.HTTP_SC}"/>
+    <variable name="dobraRawBody" type="STRING" expression="${xpath(&quot;string($body/*)&quot;)}"/>
+
+    <log category="INFO">
+        <message>DobraPollBatch | attempt=${vars.dobraPollAttempt}/${vars.dobraPollMaxAttempts} | batchId=${vars.dobraBatchId} | statusCode=${vars.dobraHttpStatus}</message>
+    </log>
+
+    <!-- HTTP-level failure (network/auth/etc.) — stop, let the caller surface it as-is -->
+    <filter xpath="${vars.dobraHttpStatus >= 400}">
+        <then>
+            <log category="ERROR">
+                <message>DobraPollBatch | HTTP error | batchId=${vars.dobraBatchId} | statusCode=${vars.dobraHttpStatus}</message>
+            </log>
+            <variable name="dobraPollRaw" type="STRING" expression="${vars.dobraRawBody}"/>
+        </then>
+        <else>
+            <!-- Pull the JSON out of the raw SSE body.
+                 The body may contain multiple events ("event: update\ndata: {...}\n\n" repeated).
+                 Split on the literal "data: " delimiter and take the LAST segment (most recent
+                 event) — indexOf+subString(no-end) was wrongly including all subsequent events.
+                 Falls back to the raw body if the delimiter is not present at all. -->
+            <!-- Find the LAST "data: " occurrence by chaining indexOf(str, target, fromIndex)
+                 calls — split() array indexing does not work with dynamic indices in this
+                 MI version. Handles up to 3 events per SSE connection (more than enough
+                 for the DOBRADIGITAL state machine: pending/awaiting_approval → completed/failed). -->
+            <variable name="dobraIdx0" type="INTEGER" expression="${indexOf(vars.dobraRawBody, 'data: ')}"/>
+            <variable name="dobraIdx1" type="INTEGER" expression="${vars.dobraIdx0 > -1 ? indexOf(vars.dobraRawBody, 'data: ', vars.dobraIdx0 + 1) : -1}"/>
+            <variable name="dobraIdx2" type="INTEGER" expression="${vars.dobraIdx1 > -1 ? indexOf(vars.dobraRawBody, 'data: ', vars.dobraIdx1 + 1) : -1}"/>
+            <variable name="dobraLastDataIdx" type="INTEGER"
+                      expression="${vars.dobraIdx2 > -1 ? vars.dobraIdx2 : (vars.dobraIdx1 > -1 ? vars.dobraIdx1 : vars.dobraIdx0)}"/>
+            <variable name="dobraPollRaw" type="STRING"
+                      expression="${vars.dobraLastDataIdx > -1 ? subString(vars.dobraRawBody, vars.dobraLastDataIdx + 6) : vars.dobraRawBody}"/>
+
+            <filter xpath="${contains(vars.dobraPollRaw, '&quot;status&quot;:&quot;completed&quot;') or contains(vars.dobraPollRaw, '&quot;status&quot;:&quot;failed&quot;')}">
+                <then>
+                    <log category="INFO">
+                        <message>DobraPollBatch | terminal state reached | batchId=${vars.dobraBatchId} | attempt=${vars.dobraPollAttempt}</message>
+                    </log>
+                </then>
+                <else>
+                    <filter xpath="${vars.dobraPollAttempt >= vars.dobraPollMaxAttempts}">
+                        <then>
+                            <log category="WARN">
+                                <message>DobraPollBatch | gave up after max attempts, still not terminal | batchId=${vars.dobraBatchId}</message>
+                            </log>
+                            <!-- dobraPollRaw still holds the last known (non-terminal) state —
+                                 forwarded as-is; the caller sees e.g. "awaiting_approval" and
+                                 can call /payments/status again later. -->
+                        </then>
+                        <else>
+                            <variable name="dobraPollAttempt" type="INTEGER" expression="${vars.dobraPollAttempt + 1}"/>
+                            <sequence key="DobraPollBatchSequence"/>
+                        </else>
+                    </filter>
+                </else>
+            </filter>
+        </else>
+    </filter>
+
+</sequence>

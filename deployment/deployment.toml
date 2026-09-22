@@ -3,7 +3,7 @@ hostname = "localhost"
 # offset  = 10
 
 [icp_config]
-enabled = true
+enabled = false
 environment = "dev"
 project = "payment-integration"
 integration = "payment-integration"
@@ -13,6 +13,18 @@ secret = "3374bbbb.989f2c1c-0279-4e78-b1a4-8dff98d7cdc71a6cab52-01a9-4372-b256-9
 
 [user_store]
 type = "read_only_ldap"
+
+# Dobra Digital's SSE stream (GET .../batch/{batchId}/stream, see
+# DobraPollBatchSequence.xml) responds with Content-Type: text/event-stream.
+# Axis2's default message builder can't handle that content type and falls
+# back to the XML builder, which then blows up (WstxUnexpectedCharException:
+# "expected '<'") on the first byte of the SSE body. Registering a builder for
+# this content type makes the engine treat the response as plain text instead
+# of trying to parse it as XML/JSON — required for
+# vars.dobraStreamResponse.payload to be readable as a string at all.
+[[custom_message_builders]]
+content_type = "text/event-stream"
+class = "org.apache.axis2.format.PlainTextBuilder"
 
 [keystore.primary]
 file_name = "repository/resources/security/wso2carbon.jks"
@@ -28,10 +40,18 @@ algorithm = "AES"
 
 ## Following are set of example configs. Please refer docs for complete set of configurations.
 
-# [transport.http]
-# socket_timeout = 180000   # timeout in milliseconds
-# disable_connection_keepalive = false
-# connection_timeout = 90000 # in milliseconds
+# DobraPollBatchSequence can legitimately take up to ~6 minutes (6 retries x
+# ~60s, see its header comment) waiting on Dobra Digital's SSE stream — well
+# past the engine's 120s default. Without raising these, MI silently drops
+# the inbound /payments/status request (client sees no response at all) long
+# before our own retry loop gives up.
+[mediation]
+synapse.global_timeout_interval = "420000"   # 7 minutes, in milliseconds
+
+[transport.http]
+socket_timeout = 420000   # timeout in milliseconds
+disable_connection_keepalive = false
+connection_timeout = 90000 # in milliseconds
 
 # [transport.jms]
 # sender_enable = true

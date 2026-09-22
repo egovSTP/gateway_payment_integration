@@ -4,7 +4,9 @@
     <!--
         Request body:
           provider    (required) — SAOWALLET | DOBRADIGITAL
-          identifier  (required) — invoice ID (SAOWALLET) | transactionId (DOBRADIGITAL)
+          identifier  (required) — invoice ID (SAOWALLET) | batchId (DOBRADIGITAL —
+                      the value returned by POST /create as `batchId`, NOT a
+                      transactionId; see DobraPollBatchSequence)
 
         Headers:
           clientKey   (required) — X-Merchant-Login (SAOWALLET) | x-client-key (DOBRADIGITAL)
@@ -65,10 +67,13 @@
             <respond/>
         </case>
 
-        <!-- ── DOBRADIGITAL ── -->
+        <!-- ── DOBRADIGITAL v2.0 ──
+             identifier is now the batchId returned by POST /create (secção 8.3),
+             not a transactionId — the actual transactionId(s) only exist once the
+             batch resolves (see DobraPollBatchSequence, batch.transactionIds). -->
         <case regex="DOBRADIGITAL">
             <log category="INFO">
-                <message>CheckStatus | provider=DOBRADIGITAL | identifier=${vars.identifier}</message>
+                <message>CheckStatus | provider=DOBRADIGITAL | batchId=${vars.identifier}</message>
             </log>
 
             <!-- Validate credentials -->
@@ -84,16 +89,28 @@
                 <else/>
             </filter>
 
-            <http.get configKey="DobraEndpoint">
-                <relativePath>{${"/transactions/" + vars.identifier + "/status"}}</relativePath>
-                <headers>[[&quot;x-client-key&quot;,&quot;${vars.clientKey}&quot;]]</headers>
-                <nonErrorHttpStatusCodes>401,404,429,500</nonErrorHttpStatusCodes>
-                <responseVariable>providerResponse</responseVariable>
-                <overwriteBody>false</overwriteBody>
-            </http.get>
-            <property name="HTTP_SC" expression="${vars.providerResponse.attributes.statusCode}" scope="axis2" type="INTEGER"/>
+            <variable name="dobraBatchId" type="STRING" expression="${vars.identifier}"/>
+            <variable name="dobraPollAttempt" type="INTEGER" value="1"/>
+            <!-- ~6 attempts, each up to ~60s when pending (see DobraPollBatchSequence) —
+                 comfortably covers Dobra's own 4-minute approval window. -->
+            <variable name="dobraPollMaxAttempts" type="INTEGER" value="6"/>
+
+            <sequence key="DobraPollBatchSequence"/>
+
+            <!-- Only read the plain variables DobraPollBatchSequence set (dobraHttpStatus,
+                 dobraPollRaw) — never vars.dobraStreamResponse itself, see the "IMPORTANT"
+                 note in DobraPollBatchSequence.xml. -->
+            <filter xpath="${vars.dobraHttpStatus >= 400}">
+                <then>
+                    <property name="HTTP_SC" expression="${vars.dobraHttpStatus}" scope="axis2" type="INTEGER"/>
+                </then>
+                <else>
+                    <property name="HTTP_SC" value="200" scope="axis2" type="INTEGER"/>
+                </else>
+            </filter>
+            <property name="messageType" value="application/json" scope="axis2"/>
             <payloadFactory media-type="json">
-                <format>{${vars.providerResponse.payload}}</format>
+                <format>${vars.dobraPollRaw}</format>
             </payloadFactory>
             <sequence key="LogResponse"/>
             <respond/>
