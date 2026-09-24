@@ -64,26 +64,26 @@
             any later events appended after the first one.
     -->
 
-    <!-- No responseVariable — avoids the ConnectorResponse->HashMap ClassCastException
-         that occurs when any property is read off a responseVariable across recursive
-         calls (the engine converts the var to a plain HashMap after the first access).
-         overwriteBody=true writes the response body to the message payload directly;
-         the transport sets HTTP_SC in the axis2 scope automatically, giving the status
-         code without any ConnectorResponse object involved. -->
+    <!-- Use responseVariable to avoid XML-parse errors when the SSE body is plain text.
+         Read both values (statusCode + payload) into plain typed variables immediately
+         after the call — before any recursive call overwrites them — so the recursive
+         invocation of this sequence only ever reads a fresh responseVariable it just
+         created, avoiding the ConnectorResponse->HashMap ClassCastException. -->
     <http.get configKey="DobraEndpoint">
         <relativePath>{${"/portal/transactions/batch/" + vars.dobraBatchId + "/stream"}}</relativePath>
         <headers>[["x-client-key","${vars.clientKey}"],["Accept","text/event-stream"]]</headers>
         <nonErrorHttpStatusCodes>400,401,404,429,500</nonErrorHttpStatusCodes>
-        <overwriteBody>true</overwriteBody>
+        <responseVariable>dobraStreamResponse</responseVariable>
+        <overwriteBody>false</overwriteBody>
     </http.get>
 
-    <!-- HTTP_SC is set in axis2 scope by the transport.
-         PlainTextBuilder (registered for text/event-stream) stores the raw body text
-         inside a <TEXT> XML element — extract it with xpath rather than string(payload),
-         which goes through the JSON engine and produces a mangled object instead of
-         the raw SSE string. -->
-    <variable name="dobraHttpStatus" type="INTEGER" expression="${properties.axis2.HTTP_SC}"/>
-    <variable name="dobraRawBody" type="STRING" expression="${xpath(&quot;string($body/*)&quot;)}"/>
+    <variable name="dobraHttpStatus" type="INTEGER" expression="${vars.dobraStreamResponse.attributes.statusCode}"/>
+    <variable name="dobraRawBody" type="STRING" expression="${string(vars.dobraStreamResponse.payload)}"/>
+    <!-- Drop the connector response now that both values are captured. Otherwise the
+         recursive call's http.get (attempt 2+) finds the previous attempt's
+         dobraStreamResponse already degraded to a HashMap and fails with the
+         ConnectorResponse ClassCastException (observed 2026-09-23 on attempt 1 → 2). -->
+    <variable name="dobraStreamResponse" action="remove"/>
 
     <log category="INFO">
         <message>DobraPollBatch | attempt=${vars.dobraPollAttempt}/${vars.dobraPollMaxAttempts} | batchId=${vars.dobraBatchId} | statusCode=${vars.dobraHttpStatus}</message>
@@ -114,6 +114,12 @@
                       expression="${vars.dobraIdx2 > -1 ? vars.dobraIdx2 : (vars.dobraIdx1 > -1 ? vars.dobraIdx1 : vars.dobraIdx0)}"/>
             <variable name="dobraPollRaw" type="STRING"
                       expression="${vars.dobraLastDataIdx > -1 ? subString(vars.dobraRawBody, vars.dobraLastDataIdx + 6) : vars.dobraRawBody}"/>
+            <!-- The plain-text SSE body is stringified inside MI's <text> wrapper, so the
+                 segment above ends with "\n\n</text>" — strip it, otherwise the response
+                 is not valid JSON and gateway_core can't read batch.status (observed
+                 2026-09-23: payment stayed PENDING_PROVIDER after a "completed" batch). -->
+            <variable name="dobraPollRaw" type="STRING"
+                      expression="${trim(replace(vars.dobraPollRaw, '&lt;/text&gt;', ''))}"/>
 
             <filter xpath="${contains(vars.dobraPollRaw, '&quot;status&quot;:&quot;completed&quot;') or contains(vars.dobraPollRaw, '&quot;status&quot;:&quot;failed&quot;')}">
                 <then>
